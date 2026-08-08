@@ -1,0 +1,9 @@
+{
+  "name":"Zone Driving Hours",
+  "short_name":"Driving Hours",
+  "start_url":".",
+  "display":"standalone",
+  "background_color":"#f4f7fb",
+  "theme_color":"#0b5cab",
+  "description":"Zone 1, 2 and 3 five-week driving hours tracker"
+}
