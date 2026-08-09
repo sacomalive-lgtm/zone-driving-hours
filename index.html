@@ -333,6 +333,1007 @@ document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>{if(b.dataset.
 document.querySelectorAll(".zoneBtn").forEach(b=>b.onclick=()=>chooseZone(b.dataset.zone));
 
 window.rest=false;window.selectedZone="";window.selectedDuty="";$("entryDate").value=dateISO(new Date());$("cycleStart").value=defaultCycle();renderAll();
+  /* ===== DRIVING HOURS APP UPGRADE ===== */
+(function(){
+
+  const style=document.createElement("style");
+  style.textContent=`
+    .avgBox{
+      background:#fff;
+      border-radius:15px;
+      padding:14px;
+      margin:10px 0;
+      box-shadow:0 2px 10px #00000008
+    }
+    .avgBox .avgTitle{
+      font-size:12px;
+      font-weight:800;
+      color:#64748b
+    }
+    .avgBox .avgNumber{
+      font-size:28px;
+      font-weight:900;
+      margin:3px 0
+    }
+    .avgBelow{color:#188038!important}
+    .avgAbove{color:#c62828!important}
+    .avgEqual{color:#775900!important}
+    .dutyDetail{
+      background:#fff;
+      border-radius:14px;
+      padding:14px;
+      margin-top:10px;
+      max-height:58vh;
+      overflow:auto
+    }
+    .dutyRow{
+      display:flex;
+      justify-content:space-between;
+      gap:14px;
+      padding:9px 0;
+      border-bottom:1px solid #edf0f5
+    }
+    .dutyRow:last-child{border-bottom:0}
+    .dutyKey{
+      font-weight:800;
+      color:#64748b
+    }
+    .dutyVal{
+      text-align:right;
+      font-weight:700;
+      white-space:pre-wrap
+    }
+    .workedRest{
+      background:#e8f5e9!important;
+      color:#1b5e20!important;
+      border-color:#b7d9bb!important
+    }
+  `;
+  document.head.appendChild(style);
+
+  /* HOME: SEE TODAY'S DUTY */
+  if(!$("seeTodayBtn")){
+    const b=document.createElement("button");
+    b.id="seeTodayBtn";
+    b.className="secondary";
+    b.textContent="👀 SEE TODAY'S DUTY";
+    $("todayBtn").insertAdjacentElement("afterend",b);
+  }
+
+  /* REST DAY WORKED */
+  if(!$("restWorkedBtn")){
+    const b=document.createElement("button");
+    b.id="restWorkedBtn";
+    b.className="secondary workedRest";
+    b.textContent="🚌 REST DAY WORKED";
+    $("restBtn").insertAdjacentElement("afterend",b);
+  }
+
+  /* FULL DUTY BUTTON */
+  if(!$("viewSelectedDutyBtn")){
+    const b=document.createElement("button");
+    b.id="viewSelectedDutyBtn";
+    b.className="secondary hidden";
+    b.textContent="📋 SEE FULL DUTY";
+    $("changeDutyBtn").insertAdjacentElement("afterend",b);
+  }
+
+  /* HOME AVERAGE */
+  if(!$("homeAverageBox")){
+    const b=document.createElement("div");
+    b.id="homeAverageBox";
+    $("home").querySelector(".stats").insertAdjacentElement("afterend",b);
+  }
+
+  /* SUMMARY AVERAGE */
+  if(!$("averageBox")){
+    const b=document.createElement("div");
+    b.id="averageBox";
+    $("summary").querySelector("#weeks").insertAdjacentElement("beforebegin",b);
+  }
+
+  /* FULL DUTY POP-UP */
+  if(!$("dutyDetailModal")){
+    const m=document.createElement("div");
+    m.id="dutyDetailModal";
+    m.className="modal hidden";
+
+    m.innerHTML=`
+      <div class="modalCard">
+        <div class="modalHead">
+          <strong id="dutyDetailTitle">Full Duty</strong>
+          <button id="closeDutyDetail">✕</button>
+        </div>
+        <div id="dutyDetailContent" class="dutyDetail"></div>
+      </div>
+    `;
+
+    document.querySelector(".app").insertAdjacentElement("afterend",m);
+  }
+
+  window.restWorked=false;
+
+  /* SUNDAY START */
+  function sundayStart(d){
+    const x=new Date(d);
+    x.setHours(12,0,0,0);
+    x.setDate(x.getDate()-x.getDay());
+    return x;
+  }
+
+  defaultCycle=function(){
+    const raw=settings.cycleStart||"2026-08-09";
+    return dateISO(sundayStart(parseDate(raw)));
+  };
+
+  cycleInfo=function(dateStr){
+    const start=parseDate(defaultCycle());
+    const d=parseDate(dateStr);
+
+    const diff=Math.floor((d-start)/86400000);
+    const cycleIndex=Math.floor(diff/35);
+
+    const cycleStart=new Date(start);
+    cycleStart.setDate(cycleStart.getDate()+cycleIndex*35);
+
+    const dayIndex=Math.max(0,diff-cycleIndex*35);
+
+    return{
+      start:cycleStart,
+      index:Math.floor(dayIndex/7)+1,
+      dayIndex
+    };
+  };
+
+  /* NEW ENTRY */
+  newEntry=function(date=dateISO(new Date())){
+
+    editingId=null;
+
+    $("entryDate").value=date;
+    $("lateBreak").value="";
+    $("lateFinish").value="";
+    $("notes").value="";
+
+    $("deleteBtn").classList.add("hidden");
+
+    window.selectedZone="";
+    window.selectedDuty="";
+    window.rest=false;
+    window.restWorked=false;
+
+    updateEntryUI();
+    showScreen("entry");
+  };
+
+  /* LOAD EXISTING ENTRY */
+  loadEntry=function(e){
+
+    editingId=e.id;
+
+    $("entryDate").value=e.date;
+    $("lateBreak").value=e.lateBreak||"";
+    $("lateFinish").value=e.lateFinish||"";
+    $("notes").value=e.notes||"";
+
+    window.selectedZone=e.zone||"";
+    window.selectedDuty=e.duty||"";
+
+    window.rest=e.status==="Rest Day";
+    window.restWorked=e.status==="Rest Day Worked";
+
+    $("deleteBtn").classList.remove("hidden");
+
+    updateEntryUI();
+    showScreen("entry");
+  };
+
+  /* ENTRY DISPLAY */
+  updateEntryUI=function(){
+
+    const date=$("entryDate").value;
+    const rest=window.rest===true;
+    const rw=window.restWorked===true;
+
+    const zone=window.selectedZone||"";
+    const duty=window.selectedDuty||"";
+
+    const d=(zone&&duty)
+      ?dutyKey(zone,dayType(date),duty)
+      :null;
+
+    $("entryTitle").textContent=
+      new Date(date+"T12:00:00")
+      .toLocaleDateString(undefined,{
+        weekday:"long",
+        day:"numeric",
+        month:"short"
+      });
+
+    document.querySelectorAll(".zoneBtn").forEach(b=>{
+      b.classList.toggle(
+        "selected",
+        b.dataset.zone===zone&&!rest
+      );
+    });
+
+    const card=$("selectedDutyCard");
+
+    if(rest){
+
+      card.innerHTML="😴 <strong>REST DAY</strong>";
+
+      $("changeDutyBtn").classList.add("hidden");
+      $("viewSelectedDutyBtn").classList.add("hidden");
+
+    }else if(d){
+
+      card.innerHTML=
+        `<strong>${zone}</strong> · ${duty}`+
+        `${rw?" · 🚌 REST DAY WORKED":""}`+
+        `<br><span>${minutesText(d.total)} basic driving</span>`;
+
+      $("changeDutyBtn").classList.remove("hidden");
+      $("viewSelectedDutyBtn").classList.remove("hidden");
+
+    }else{
+
+      card.textContent=
+        zone?"No duty selected":"Select your duty zone";
+
+      $("changeDutyBtn")
+        .classList.toggle("hidden",!zone);
+
+      $("viewSelectedDutyBtn")
+        .classList.add("hidden");
+    }
+
+    /* REST DAY WORKED = ZERO HOURS */
+    const basic=
+      d&&!rest&&!rw
+      ?d.total
+      :0;
+
+    const lb=
+      (rest||rw)
+      ?0
+      :+($("lateBreak").value||0);
+
+    const lf=
+      (rest||rw)
+      ?0
+      :+($("lateFinish").value||0);
+
+    const ot=lb+lf;
+
+    $("basicTotal").textContent=minutesText(basic);
+    $("breakOT").textContent=`+${lb}m`;
+    $("finishOT").textContent=`+${lf}m`;
+    $("otTotalEntry").textContent=`+${ot}m`;
+    $("todayTotal").textContent=minutesText(basic+ot);
+
+    $("restBtn").textContent=
+      rest
+      ?"↩️ CANCEL REST DAY"
+      :"😴 REST DAY";
+
+    $("restWorkedBtn").textContent=
+      rw
+      ?"↩️ CANCEL REST DAY WORKED"
+      :"🚌 REST DAY WORKED";
+
+    $("lateBreak").disabled=rest||rw;
+    $("lateFinish").disabled=rest||rw;
+  };
+
+  /* REST DAY */
+  setRest=function(){
+
+    if(window.rest){
+
+      window.rest=false;
+
+    }else{
+
+      window.rest=true;
+      window.restWorked=false;
+      window.selectedZone="";
+      window.selectedDuty="";
+
+      $("lateBreak").value="";
+      $("lateFinish").value="";
+    }
+
+    updateEntryUI();
+  };
+
+  /* REST DAY WORKED */
+  setRestWorked=function(){
+
+    if(window.restWorked){
+
+      window.restWorked=false;
+      updateEntryUI();
+      return;
+    }
+
+    if(!(window.selectedZone&&window.selectedDuty)){
+
+      alert(
+        "Select the duty first, then choose REST DAY WORKED."
+      );
+
+      return;
+    }
+
+    window.restWorked=true;
+    window.rest=false;
+
+    $("lateBreak").value="";
+    $("lateFinish").value="";
+
+    updateEntryUI();
+  };
+
+  /* SAVE */
+  saveEntry=function(){
+
+    const date=$("entryDate").value;
+
+    if(!date)return;
+
+    const lateBreak=
+      window.rest||window.restWorked
+      ?0
+      :+($("lateBreak").value||0);
+
+    const lateFinish=
+      window.rest||window.restWorked
+      ?0
+      :+($("lateFinish").value||0);
+
+    const status=
+      window.rest
+      ?"Rest Day"
+      :window.restWorked
+      ?"Rest Day Worked"
+      :(window.selectedZone&&window.selectedDuty)
+      ?"Worked"
+      :"";
+
+    if(!status){
+
+      alert(
+        "Select a duty zone and duty, choose Rest Day, or choose Rest Day Worked."
+      );
+
+      return;
+    }
+
+    if(
+      window.restWorked&&
+      !(window.selectedZone&&window.selectedDuty)
+    ){
+
+      alert("Select the duty first.");
+
+      return;
+    }
+
+    const item={
+      id:editingId||crypto.randomUUID(),
+      date,
+      status,
+      zone:window.selectedZone||"",
+      duty:window.selectedDuty||"",
+      lateBreak,
+      lateFinish,
+      notes:$("notes").value.trim()
+    };
+
+    if(editingId){
+
+      entries=entries.map(e=>
+        e.id===editingId
+        ?item
+        :e
+      );
+
+    }else{
+
+      entries.push(item);
+    }
+
+    entries.sort((a,b)=>
+      a.date.localeCompare(b.date)
+    );
+
+    save();
+    showScreen("home");
+  };
+
+  /* TOTALS - REST DAYS WORKED EXCLUDED */
+  totalsFor=function(start){
+
+    const s=dateISO(start);
+
+    const end=new Date(start);
+    end.setDate(end.getDate()+34);
+
+    const e=dateISO(end);
+
+    const es=entries.filter(
+      x=>x.date>=s&&x.date<=e
+    );
+
+    let driving=0;
+    let ot=0;
+    let rest=0;
+
+    es.forEach(x=>{
+
+      if(
+        x.status==="Rest Day"||
+        x.status==="Rest Day Worked"
+      ){
+
+        if(x.status==="Rest Day")rest++;
+
+        return;
+      }
+
+      const o=
+        (x.lateBreak||0)+
+        (x.lateFinish||0);
+
+      ot+=o;
+
+      const d=
+        dutyKey(
+          x.zone,
+          dayType(x.date),
+          x.duty
+        );
+
+      if(d)driving+=d.total;
+
+      driving+=o;
+    });
+
+    return{driving,ot,rest};
+  };
+
+  totalsForWeek=function(start){
+
+    const end=new Date(start);
+    end.setDate(end.getDate()+6);
+
+    const es=entries.filter(x=>{
+
+      const d=parseDate(x.date);
+
+      return d>=start&&d<=end;
+
+    });
+
+    let driving=0;
+    let ot=0;
+
+    es.forEach(x=>{
+
+      if(
+        x.status==="Rest Day"||
+        x.status==="Rest Day Worked"
+      )return;
+
+      const o=
+        (x.lateBreak||0)+
+        (x.lateFinish||0);
+
+      ot+=o;
+
+      const d=
+        dutyKey(
+          x.zone,
+          dayType(x.date),
+          x.duty
+        );
+
+      if(d)driving+=d.total;
+
+      driving+=o;
+    });
+
+    return{driving,ot};
+  };
+
+  /* HOME */
+  renderHome=function(){
+
+    const today=dateISO(new Date());
+
+    const ci=cycleInfo(today);
+
+    const t=totalsFor(ci.start);
+
+    $("cycleTotal")
+      .textContent=minutesText(t.driving);
+
+    const end=new Date(ci.start);
+
+    end.setDate(
+      end.getDate()+34
+    );
+
+    $("cycleDates").textContent=
+      `${ci.start.toLocaleDateString()} – ${end.toLocaleDateString()}`;
+
+    const weekStart=new Date(ci.start);
+
+    weekStart.setDate(
+      weekStart.getDate()+
+      (ci.index-1)*7
+    );
+
+    const wt=totalsForWeek(weekStart);
+
+    $("weekTotal")
+      .textContent=minutesText(wt.driving);
+
+    $("otTotal")
+      .textContent=minutesText(t.ot);
+
+    $("restCount")
+      .textContent=t.rest;
+
+    const avg=t.driving/5;
+
+    const diff=avg-2370;
+
+    const cls=
+      diff<0
+      ?"avgBelow"
+      :diff>0
+      ?"avgAbove"
+      :"avgEqual";
+
+    const label=
+      diff<0
+      ?"BELOW CONTRACT AVERAGE"
+      :diff>0
+      ?"ABOVE CONTRACT AVERAGE"
+      :"EXACTLY CONTRACT AVERAGE";
+
+    $("homeAverageBox").innerHTML=
+      `<div class="avgBox">
+        <div class="avgTitle">
+          5-WEEK WEEKLY AVERAGE · CONTRACT 39h 30m
+        </div>
+        <div class="avgNumber ${cls}">
+          ${minutesText(avg)}
+        </div>
+        <div class="mini ${cls}">
+          ${label} ·
+          ${
+            diff===0
+            ?"0h 00m"
+            :(diff>0?"+":"")+minutesText(Math.abs(diff))
+          }
+        </div>
+      </div>`;
+  };
+
+  /* SUMMARY */
+  renderSummary=function(){
+
+    const ci=
+      cycleInfo(dateISO(new Date()));
+
+    let html="";
+    let total=0;
+
+    for(let w=1;w<=5;w++){
+
+      const s=new Date(ci.start);
+
+      s.setDate(
+        s.getDate()+(w-1)*7
+      );
+
+      const e=new Date(s);
+
+      e.setDate(
+        e.getDate()+6
+      );
+
+      const t=totalsForWeek(s);
+
+      total+=t.driving;
+
+      html+=
+        `<div class="week">
+          <div class="weekHead">
+            <strong>Week ${w}</strong>
+            <span>
+              ${s.toLocaleDateString()} –
+              ${e.toLocaleDateString()}
+            </span>
+          </div>
+
+          <div class="weekTotal">
+            ${minutesText(t.driving)}
+          </div>
+
+          <div class="mini">
+            Overtime counted:
+            ${minutesText(t.ot)}
+          </div>
+        </div>`;
+    }
+
+    const avg=total/5;
+    const diff=avg-2370;
+
+    const cls=
+      diff<0
+      ?"avgBelow"
+      :diff>0
+      ?"avgAbove"
+      :"avgEqual";
+
+    const label=
+      diff<0
+      ?"BELOW 39h 30m"
+      :diff>0
+      ?"ABOVE 39h 30m"
+      :"EXACTLY 39h 30m";
+
+    $("averageBox").innerHTML=
+      `<div class="avgBox">
+        <div class="avgTitle">
+          5-WEEK WEEKLY AVERAGE
+        </div>
+
+        <div class="avgNumber ${cls}">
+          ${minutesText(avg)}
+        </div>
+
+        <div class="mini ${cls}">
+          ${label} ·
+          ${
+            diff===0
+            ?"0h 00m"
+            :(diff>0?"+":"−")+minutesText(Math.abs(diff))
+          }
+        </div>
+      </div>`;
+
+    $("weeks").innerHTML=html;
+  };
+
+  /* FULL DUTY DISPLAY */
+  function dutyValueHtml(v){
+
+    if(v===null||v===undefined)
+      return "";
+
+    if(Array.isArray(v)){
+
+      return v.map(x=>
+        `<div style="margin:4px 0">
+          ${dutyValueHtml(x)}
+        </div>`
+      ).join("");
+    }
+
+    if(typeof v==="object"){
+
+      return Object.entries(v)
+        .map(([k,x])=>
+          `<div class="dutyRow">
+            <span class="dutyKey">
+              ${String(k).replace(/([A-Z])/g," $1")}
+            </span>
+            <span class="dutyVal">
+              ${dutyValueHtml(x)}
+            </span>
+          </div>`
+        ).join("");
+    }
+
+    return String(v)
+      .replace(/</g,"&lt;")
+      .replace(/>/g,"&gt;");
+  }
+
+  function showDutyDetail(
+    date,
+    zone,
+    duty,
+    status
+  ){
+
+    const d=
+      dutyKey(
+        zone,
+        dayType(date),
+        duty
+      );
+
+    if(!d){
+
+      alert(
+        "The full duty details could not be found for this date."
+      );
+
+      return;
+    }
+
+    $("dutyDetailTitle").textContent=
+      `${zone} · Duty ${duty} · `+
+      new Date(date+"T12:00:00")
+      .toLocaleDateString(undefined,{
+        weekday:"long",
+        day:"numeric",
+        month:"short"
+      });
+
+    const skip=
+      new Set(["zone","day","duty"]);
+
+    let html="";
+
+    if(status){
+
+      html+=
+        `<div class="status ${
+          status==="Rest Day Worked"
+          ?"workedRest"
+          :"rest"
+        }">
+          ${
+            status==="Rest Day Worked"
+            ?"🚌 REST DAY WORKED — NOT INCLUDED IN HOURS"
+            :"😴 REST DAY"
+          }
+        </div>`;
+    }
+
+    html+=
+      Object.entries(d)
+      .filter(([k])=>!skip.has(k))
+      .map(([k,v])=>
+        `<div class="dutyRow">
+          <span class="dutyKey">
+            ${String(k).replace(/([A-Z])/g," $1")}
+          </span>
+
+          <span class="dutyVal">
+            ${
+              k==="total"
+              ?minutesText(v)
+              :dutyValueHtml(v)
+            }
+          </span>
+        </div>`
+      ).join("");
+
+    $("dutyDetailContent").innerHTML=html;
+
+    $("dutyDetailModal")
+      .classList.remove("hidden");
+  }
+
+  window.showDutyDetail=showDutyDetail;
+
+  /* SEE TODAY'S DUTY */
+  function viewToday(){
+
+    const date=dateISO(new Date());
+
+    const e=
+      entries.find(x=>x.date===date);
+
+    if(!e){
+
+      newEntry(date);
+      return;
+    }
+
+    if(e.duty){
+
+      showDutyDetail(
+        e.date,
+        e.zone,
+        e.duty,
+        e.status
+      );
+
+    }else{
+
+      alert(
+        "Today is recorded as a rest day with no duty."
+      );
+    }
+  }
+
+  /* HISTORY */
+  renderHistory=function(){
+
+    if(!entries.length){
+
+      $("historyList").innerHTML=
+        '<div class="empty">No entries yet.</div>';
+
+      return;
+    }
+
+    $("historyList").innerHTML=
+      [...entries]
+      .reverse()
+      .map(e=>{
+
+        const d=
+          e.duty
+          ?dutyKey(
+            e.zone,
+            dayType(e.date),
+            e.duty
+          )
+          :null;
+
+        const basic=d?d.total:0;
+
+        const ot=
+          (e.lateBreak||0)+
+          (e.lateFinish||0);
+
+        const detail=
+          e.duty
+          ?
+          `<button
+            class="secondary"
+            style="margin-top:8px"
+            onclick="event.stopPropagation();showDutyDetail(
+              '${e.date}',
+              '${e.zone}',
+              '${e.duty.replace(/'/g,"\\'")}',
+              '${e.status}'
+            )">
+            📋 SEE FULL DUTY
+          </button>`
+          :"";
+
+        return `
+          <div class="historyItem">
+
+            <div class="historyTop">
+              <span>
+                ${parseDate(e.date)
+                  .toLocaleDateString(undefined,{
+                    weekday:"short",
+                    day:"numeric",
+                    month:"short"
+                  })}
+              </span>
+
+              <span class="tag">
+                ${e.status}
+              </span>
+            </div>
+
+            <div>
+              ${
+                e.status==="Rest Day"
+                ?"😴 Rest Day"
+                :`${e.zone} · ${e.duty}`
+              }
+            </div>
+
+            ${
+              e.status==="Worked"
+              ?
+              `<div class="mini">
+                Basic: ${minutesText(basic)}
+                · Late break: +${e.lateBreak||0}m
+                · Late finish: +${e.lateFinish||0}m
+                · <strong>
+                    Total: ${minutesText(basic+ot)}
+                  </strong>
+              </div>`
+              :""
+            }
+
+            ${
+              e.notes
+              ?
+              `<div class="mini">
+                📝 ${e.notes}
+              </div>`
+              :""
+            }
+
+            ${detail}
+
+            <button
+              class="secondary"
+              onclick="event.stopPropagation();loadEntry(${JSON.stringify(e).replace(/'/g,"&#39;")})">
+              ✏️ EDIT ENTRY
+            </button>
+
+          </div>`;
+      }).join("");
+  };
+
+  /* MASTER RENDER */
+  renderAll=function(){
+
+    renderHome();
+
+    if($("summary").classList.contains("active"))
+      renderSummary();
+
+    if($("history").classList.contains("active"))
+      renderHistory();
+
+    updateEntryUI();
+  };
+
+  /* BUTTONS */
+  $("seeTodayBtn").onclick=viewToday;
+
+  $("restWorkedBtn").onclick=setRestWorked;
+
+  $("viewSelectedDutyBtn").onclick=()=>{
+
+    if(
+      window.selectedZone&&
+      window.selectedDuty
+    ){
+
+      showDutyDetail(
+        $("entryDate").value,
+        window.selectedZone,
+        window.selectedDuty,
+        window.restWorked
+        ?"Rest Day Worked"
+        :"Worked"
+      );
+    }
+  };
+
+  $("restBtn").onclick=setRest;
+
+  $("todayBtn").onclick=()=>newEntry();
+
+  $("saveBtn").onclick=saveEntry;
+
+  $("entryDate").onchange=()=>{
+
+    window.rest=false;
+    window.restWorked=false;
+
+    updateEntryUI();
+  };
+
+  $("lateBreak").oninput=updateEntryUI;
+  $("lateFinish").oninput=updateEntryUI;
+
+  $("closeDutyDetail").onclick=()=>
+    $("dutyDetailModal")
+    .classList.add("hidden");
+
+  $("dutyDetailModal").onclick=e=>{
+
+    if(e.target.id==="dutyDetailModal")
+      $("dutyDetailModal")
+      .classList.add("hidden");
+  };
+
+  /* REFRESH */
+  renderAll();
+
+})();
 
 </script>
 </body>
